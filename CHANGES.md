@@ -29,7 +29,8 @@ Tags: !lambda "static std::string v; v = tags; return v.c_str();"
 ## 2. OTA password moved to `secrets.yaml`
 
 The OTA password was hardcoded in the YAML. It is now `password: !secret ota_password`.
-`secrets.yaml` holds the same value as before and is git-ignored, so the device itself is unchanged.
+`secrets.yaml` is git-ignored. The password value was also changed (old project name → `jardinerito`);
+the device was re-flashed over USB with the new one.
 To build this yourself, create `secrets.yaml` next to the YAML:
 
 ```yaml
