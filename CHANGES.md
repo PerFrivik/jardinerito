@@ -78,3 +78,14 @@ Found while testing: after "Calibrate DRY" was saved but before "Calibrate WET",
 as calibrated (wet was still 0, so dry - wet was large), computed a low moisture and ran one pump burst.
 Now moisture stays "not calibrated" until both values have been saved (> 0 V) and are at least 0.03 V apart,
 so it can't water in the middle of calibration.
+
+## 7. Watering robustness and Spanish notifications
+
+- 2 min pause after power-up before the first automatic watering, so plugging it in or moving the sensor
+  doesn't trigger a burst from a stale reading.
+- The daily count (stored with its date), the time of the last burst, "jar empty" and its counter are now
+  saved in flash, so a restart no longer resets the daily limit or the soak wait. A clock that went
+  backwards can't block watering. The midnight reset moved into the watering check.
+- ntfy notifications are sent as JSON (accents like ñ/á in the plant name stay intact; HTTP headers can't
+  carry them reliably) and are now in Spanish. Default plant name "Tu planta".
+Tested on the first device: no burst in the first 2 min; after a restart the count stayed and it kept waiting.

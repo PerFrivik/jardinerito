@@ -87,14 +87,6 @@ time:
   - platform: sntp
     id: sntp_time
     timezone: Europe/Zurich
-    on_time:
-      - seconds: 0
-        minutes: 0
-        hours: 0
-        then:
-          - lambda: |-
-              id(bursts_today) = 0;
-              id(limit_alerted) = false;
 
 # ---------------------------------------------------------------------
 #  Hardware
@@ -349,7 +341,7 @@ text:
     mode: text
     optimistic: true
     restore_value: true
-    initial_value: "Your plant"
+    initial_value: "Tu planta"
     max_length: 32
     entity_category: config
 
@@ -396,8 +388,8 @@ button:
     on_press:
       - script.execute:
           id: notify
-          title: "Hola from Jardinerito"
-          message: "Notifications work!"
+          title: "Hola desde Jardinerito"
+          message: "¡Las notificaciones funcionan!"
           tags: "seedling,wave"
 
   - platform: restart
@@ -415,9 +407,18 @@ globals:
   - id: last_watered_ms
     type: uint32_t
     initial_value: "0"
+  # Saved in flash so a restart doesn't reset the daily limit or the soak wait
   - id: bursts_today
     type: int
-    restore_value: false
+    restore_value: true
+    initial_value: "0"
+  - id: burst_day
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: last_burst_epoch
+    type: int
+    restore_value: true
     initial_value: "0"
   - id: soak_until
     type: uint32_t
@@ -430,12 +431,15 @@ globals:
     initial_value: "0"
   - id: fail_bursts
     type: int
+    restore_value: true
     initial_value: "0"
   - id: jar_empty
     type: bool
+    restore_value: true
     initial_value: "false"
   - id: limit_alerted
     type: bool
+    restore_value: true
     initial_value: "false"
   - id: do_water
     type: bool
@@ -505,12 +509,21 @@ script:
               - wifi.connected:
               - lambda: return id(ntfy_topic).state.size() > 0;
           then:
+            # JSON publishing: accents (ñ, á) stay intact, unlike in HTTP headers
             - http_request.post:
-                url: !lambda return std::string("https://ntfy.sh/") + id(ntfy_topic).state;
-                request_headers:
-                  Title: !lambda "static std::string v; v = title; return v.c_str();"
-                  Tags: !lambda "static std::string v; v = tags; return v.c_str();"
-                body: !lambda return message;
+                url: https://ntfy.sh/
+                json: |-
+                  root["topic"] = id(ntfy_topic).state;
+                  root["title"] = title;
+                  root["message"] = message;
+                  JsonArray tag_list = root["tags"].to<JsonArray>();
+                  size_t start = 0;
+                  while (start < tags.size()) {
+                    size_t end = tags.find(',', start);
+                    if (end == std::string::npos) end = tags.size();
+                    if (end > start) tag_list.add(tags.substr(start, end - start));
+                    start = end + 1;
+                  }
 
   - id: update_backlight
     then:
@@ -544,12 +557,28 @@ interval:
     then:
       - lambda: |-
           id(do_water) = false;
+          // New day -> reset the daily count (stored with its date, so restarts don't reset it)
+          auto t = id(sntp_time).now();
+          if (t.is_valid()) {
+            int today = t.year * 10000 + t.month * 100 + t.day_of_month;
+            if (id(burst_day) != today) {
+              id(burst_day) = today;
+              id(bursts_today) = 0;
+              id(limit_alerted) = false;
+            }
+          }
+          uint32_t now = millis();
+          if (now < 120000) return;                   // 2 min after power-up: let the sensor settle
           if (!id(auto_water).state) return;
           float m = id(moisture).state;
           if (isnan(m)) return;                       // not calibrated yet
           if (id(pump).state) return;
-          uint32_t now = millis();
           if (id(soak_until) != 0 && (int32_t) (now - id(soak_until)) < 0) return;  // still soaking
+          if (t.is_valid() && id(last_burst_epoch) != 0) {
+            // still soaking from a burst before a restart (ignored if the clock went backwards)
+            int32_t since = (int32_t) t.timestamp - id(last_burst_epoch);
+            if (since >= 0 && since < (int32_t) (id(soak_min).state * 60.0f)) return;
+          }
 
           // Did the last burst actually raise moisture? If not 3x in a row -> jar empty
           if (id(awaiting_eval)) {
@@ -562,8 +591,8 @@ interval:
             }
             if (id(fail_bursts) >= 3 && !id(jar_empty)) {
               id(jar_empty) = true;
-              id(notify).execute(id(plant_name).state + std::string(": water jar is probably empty"),
-                                 std::string("I tried 3 times but the soil stayed dry. Please refill the jar, then press my button."),
+              id(notify).execute(id(plant_name).state + std::string(": el depósito está vacío"),
+                                 std::string("Lo intenté 3 veces, pero la tierra sigue seca. Rellena el depósito y pulsa mi botón."),
                                  std::string("warning,droplet"));
             }
           }
@@ -572,8 +601,8 @@ interval:
           if (id(bursts_today) >= (int) id(max_bursts).state) {
             if (!id(limit_alerted)) {
               id(limit_alerted) = true;
-              id(notify).execute(id(plant_name).state + std::string(": daily watering limit reached"),
-                                 std::string("Still dry after today's max bursts. I'll continue tomorrow. Check the jar and tube?"),
+              id(notify).execute(id(plant_name).state + std::string(": límite diario alcanzado"),
+                                 std::string("La tierra sigue seca después de los riegos de hoy. Sigo mañana. ¿Revisas el depósito y el tubo?"),
                                  std::string("warning"));
             }
             return;
@@ -585,9 +614,10 @@ interval:
           id(awaiting_eval) = true;
           id(soak_until) = now + (uint32_t) (id(soak_min).state * 60000.0f);
           if (id(soak_until) == 0) id(soak_until) = 1;
+          if (t.is_valid()) id(last_burst_epoch) = (int) t.timestamp;
           char buf[96];
-          snprintf(buf, sizeof(buf), "Soil was at %.0f%%, gave it a %d s drink.", m, (int) id(burst_secs).state);
-          id(notify).execute(id(plant_name).state + std::string(" was watered"), std::string(buf), std::string("seedling,droplet"));
+          snprintf(buf, sizeof(buf), "La tierra estaba al %.0f%%, le di %d s de agua.", m, (int) id(burst_secs).state);
+          id(notify).execute(id(plant_name).state + std::string(" ha bebido"), std::string(buf), std::string("seedling,droplet"));
       - if:
           condition:
             lambda: return id(do_water);

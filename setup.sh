@@ -383,7 +383,8 @@ next_steps() {
   cat <<EOF
 1. Wait 1 minute, then unplug Jardinerito (it saves its settings once a minute).
 2. Plug it into a USB-C charger next to the plant. The sensor stays in the soil.
-3. Put the intake tube in a jar of water. Point the outlet tube at the soil.
+3. Put the intake tube in a jar of water. Point the outlet tube at the soil, close to the sensor
+   (so it notices the water; otherwise it may think the jar is empty).
 4. Press the button once: it pumps for 3 s and water drips onto the soil. (Press again to stop.)
 5. From now on it runs by itself. Watch the face:
    happy = fine, yellow + sweat drop = thirsty (it waters itself),
