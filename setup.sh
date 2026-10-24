@@ -63,8 +63,9 @@ install_tools() {
   . .venv/bin/activate
   if [ "$(esphome version 2>/dev/null | awk '{print $2}')" != "$ESPHOME_VERSION" ]; then
     echo "Installing ESPHome $ESPHOME_VERSION (takes a minute)..."
-    pip install -q --upgrade pip
-    pip install -q "esphome==$ESPHOME_VERSION"
+    if ! { pip install -q --upgrade pip && pip install -q "esphome==$ESPHOME_VERSION"; } >.pip.log 2>&1; then
+      cat .pip.log; red "Installing ESPHome failed (see above)."; exit 1
+    fi
   fi
   if [ ! -f secrets.yaml ]; then
     # Password for wireless firmware updates. Only needed on this computer.
@@ -193,6 +194,7 @@ next_steps() {
    (Press again to stop.)
 4. Watch the face: happy = fine, yellow + sweat drop = thirsty (it will water itself),
    red "refill" = the jar is empty: refill it and press the button.
+5. Moving it from the computer to a USB charger? Wait 1 minute first: it saves its settings once a minute.
 
 Settings (watering amounts, notifications, names): http://${DEVICE_IP:-<IP from the screen>}
 Hold the button for 2 s any time to see the address again.

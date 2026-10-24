@@ -4,3 +4,4 @@ secrets.yaml
 TASK.md
 REPORT.md
 __pycache__/
+.pip.log
