@@ -42,7 +42,11 @@ Press once to water now (press again to stop). Hold for 2 s to see the address o
 
 When the soil is below 35 %, it pumps 3 s, then waits 15 min for the water to spread before checking again. At most 6 times a day, and the pump never runs longer than 15 s.
 If watering 3 times in a row doesn't help, the jar is probably empty: refill it and press the button.
-At night (22:00 to 07:00) it takes a siesta and the screen dims. All of these can be changed on the settings page.
+At night (22:00 to 07:00) it takes a siesta and the screen dims.
+
+Once `./setup.sh` has run, you can change the moisture level, burst length, soak time and bursts per day
+in a browser: hold the button for 2 s to see Jardinerito's address, then open it on any phone or laptop
+on the same Wi-Fi. The 15 s pump limit and the night hours are fixed.
 
 **Big plant?** Measure one burst: put the outlet tube in a measuring cup and press the button once. Then set
 "Pump burst length" and "Max bursts per day" on the settings page, so a day's bursts cover what the plant drinks
