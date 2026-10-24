@@ -40,7 +40,7 @@ ota_password: "choose-a-password"
 The setup hotspot password `plantlove` stays in the YAML on purpose. It is the documented
 first-time setup password (see README).
 
-No pins, watering/safety logic, timings or display settings were changed.
+Changes 1-2 did not touch pins, watering/safety logic, timings or display settings.
 
 ## 3. Spanish screens (to match `docs/*.gif`)
 
