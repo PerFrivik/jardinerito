@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Jardinerito setup. Plug Jardinerito into this laptop with USB-C and run it.
-# It installs the tools, connects Jardinerito to your Wi-Fi, calibrates the
-# sensor in your plant's pot and, if you like, sets up phone notifications.
+# It connects Jardinerito to your Wi-Fi, calibrates the sensor in your
+# plant's pot and, if you like, sets up phone notifications.
 #
 #   ./setup.sh             full setup
-#   ./setup.sh flash       only install the firmware over USB
 #   ./setup.sh wifi        only connect to (another) Wi-Fi
 #   ./setup.sh calibrate   only redo the calibration
 #   ./setup.sh notify      only set up phone notifications
 #
-# Needs Python 3.11+. The laptop must be on the same Wi-Fi you give Jardinerito.
+#   ./setup.sh flash       install/update the firmware over USB (builds it first, needs Python 3.11+)
+#   ./setup.sh reset       erase Wi-Fi, calibration and names on the device (firmware stays)
+#
+# Needs Python 3.9+. The laptop must be on the same Wi-Fi you give Jardinerito.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -131,19 +133,35 @@ PY
 }
 
 # ---------------------------------------------------------------- steps
-install_tools() {
-  step "Installing tools"
+need_python() {  # need_python 3 9
   if ! command -v python3 >/dev/null; then
     red "Python 3 is missing. Install it from https://www.python.org/downloads/ and run ./setup.sh again."
     exit 1
   fi
-  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
-    red "Python $(python3 -V | cut -d' ' -f2) is too old (need 3.11+). Install a newer one from https://www.python.org/downloads/"
+  if ! python3 -c "import sys; sys.exit(sys.version_info < ($1, $2))"; then
+    red "Python $(python3 -V | cut -d' ' -f2) is too old (need $1.$2+). Install a newer one from https://www.python.org/downloads/"
     exit 1
   fi
+}
+
+# Small: only what's needed to talk to Jardinerito over USB
+install_tools() {
+  need_python 3 9
   [ -d .venv ] || python3 -m venv .venv
   # shellcheck disable=SC1091
   . .venv/bin/activate
+  if ! python -c 'import serial' 2>/dev/null; then
+    echo "Installing a small helper (one time)..."
+    if ! pip install -q pyserial >.pip.log 2>&1; then
+      cat .pip.log; red "Installing pyserial failed (see above)."; exit 1
+    fi
+  fi
+}
+
+# Big: the firmware build tools. Only needed for flash / reset.
+install_esphome() {
+  need_python 3 11
+  install_tools
   if [ "$(esphome version 2>/dev/null | awk '{print $2}')" != "$ESPHOME_VERSION" ]; then
     echo "Installing ESPHome $ESPHOME_VERSION (takes a minute)..."
     if ! { pip install -q --upgrade pip && pip install -q "esphome==$ESPHOME_VERSION"; } >.pip.log 2>&1; then
@@ -155,7 +173,6 @@ install_tools() {
     echo "ota_password: \"$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')\"" > secrets.yaml
     echo "Created secrets.yaml (keep it, you need it for wireless updates)."
   fi
-  green "Tools ready."
 }
 
 find_port() {
@@ -190,6 +207,7 @@ need_port() {
 
 flash() {
   step "Installing the firmware"
+  install_esphome
   need_port
   echo "The first time this downloads a compiler and takes 10-15 minutes."
   until esphome run "$YAML" --device "$PORT" --no-logs; do
@@ -347,11 +365,43 @@ Settings page (watering amounts, names, notifications): http://${DEVICE_IP:-<hol
 EOF
 }
 
+reset_device() {
+  step "Reset"
+  install_esphome
+  need_port
+  echo "This erases Wi-Fi, calibration, names and notification settings on Jardinerito."
+  echo "The firmware stays, so it's ready for ./setup.sh again."
+  ask_yes "Erase them now?" n || exit 0
+  # Find the settings ("nvs") partition in the device's own partition table, then erase only that.
+  local tmp region
+  tmp="$(mktemp)"
+  python -m esptool --port "$PORT" read-flash 0x8000 0xc00 "$tmp" >/dev/null
+  region="$(python - "$tmp" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+for i in range(0, len(data), 32):
+    magic, ptype, subtype, offset, size = struct.unpack_from("<HBBII", data, i)
+    if magic == 0x50AA and ptype == 0x01 and subtype == 0x02:
+        print(hex(offset), hex(size))
+        break
+PY
+)"
+  rm -f "$tmp"
+  if [ -z "$region" ]; then
+    red "Couldn't find the settings partition. Nothing was erased."
+    exit 1
+  fi
+  # shellcheck disable=SC2086
+  python -m esptool --port "$PORT" erase-region $region
+  green "Done. Jardinerito restarts with no Wi-Fi and asks to be calibrated (\"¡Calíbrame!\")."
+}
+
 need_ip() { [ -n "$DEVICE_IP" ] || connect_wifi; }
 
 # ---------------------------------------------------------------- main
 case "${1:-all}" in
-  flash)     install_tools; flash ;;
+  flash)     flash ;;
+  reset)     reset_device ;;
   wifi)      install_tools; connect_wifi force ;;
   calibrate) install_tools; need_ip; calibrate ;;
   notify)    install_tools; need_ip; notify ;;
@@ -359,14 +409,11 @@ case "${1:-all}" in
     bold "Hola! Let's set up Jardinerito."
     install_tools
     need_port
-    if ask_yes "Does Jardinerito need the firmware installed? (No if it shows a plant face)" n; then
-      flash
-    fi
     connect_wifi
     calibrate
     plant_name
     notify
     next_steps
     ;;
-  *) sed -n '2,11p' "$0"; exit 1 ;;
+  *) sed -n '2,14p' "$0"; exit 1 ;;
 esac

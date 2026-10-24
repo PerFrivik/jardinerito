@@ -54,6 +54,8 @@ The firmware is [ESPHome](https://esphome.io). Everything (screen drawing, water
 esphome run jardinerito.yaml          # after that: build and update over Wi-Fi
 ```
 
+Giving it to someone? `./setup.sh reset` erases its Wi-Fi, calibration and names (the firmware stays), so they can run `./setup.sh` themselves.
+
 `setup.sh` creates `secrets.yaml` with the password for wireless updates. Keep it, it's not in git.
 
 Pins: pump = GPIO2, soil sensor = GPIO1 (Grove port), button = GPIO41. Screen SPI: CLK 15, MOSI 21, CS 14, DC 42, RST 48. Backlight: LP5562 on I2C (SDA 45, SCL 0, address 0x30).
