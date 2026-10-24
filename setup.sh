@@ -5,7 +5,7 @@
 #
 #   ./setup.sh             full setup
 #   ./setup.sh wifi        only connect to (another) Wi-Fi
-#   ./setup.sh calibrate   only redo the calibration
+#   ./setup.sh calibrate   only redo the calibration (add the IP if it's not on USB)
 #   ./setup.sh notify      only set up phone notifications
 #
 #   ./setup.sh flash       install/update the firmware over USB (builds it first, needs Python 3.11+)
@@ -45,6 +45,12 @@ api_post()  { curl -fsS --max-time 5 -X POST -d '' "http://$DEVICE_IP/$1/$(urlen
 lost()      { red "Lost connection to Jardinerito at http://$DEVICE_IP. Check it's powered and on Wi-Fi, then try again."; exit 1; }
 press()     { api_post button "$1" press || lost; }
 set_text()  { api_post text "$1" set "?value=$(urlencode "$2")" || lost; }
+live_volts() {  # current soil sensor voltage
+  { api_get sensor "Soil sensor voltage" || echo '{}'; } |
+    python3 -c 'import sys, json
+try: print("%.3f" % float(json.load(sys.stdin)["value"]))
+except Exception: print("")'
+}
 number_value() {  # value of a number entity, e.g. a saved calibration voltage
   { api_get number "$1" || echo '{}'; } |
     python3 -c 'import sys, json
@@ -193,8 +199,7 @@ find_port() {
 }
 
 need_port() {
-  [ -n "$PORT" ] && return
-  until find_port; do
+  [ -n "$PORT" ] || until find_port; do
     red "Jardinerito isn't connected. Plug it into this laptop with a USB-C data cable."
     pause "Press Enter to look again..."
   done
@@ -273,6 +278,10 @@ connect_wifi() {  # connect_wifi [force]  (force = choose a Wi-Fi even if it alr
       fi
     done
   fi
+  check_reachable
+}
+
+check_reachable() {
   until curl -fsS --max-time 5 "http://$DEVICE_IP/" >/dev/null 2>&1; do
     red "This laptop can't reach http://$DEVICE_IP. Is it on the same Wi-Fi as Jardinerito?"
     pause "Press Enter to try again..."
@@ -310,13 +319,27 @@ calibrate() {
   pause "   Press Enter when you've watered it..."
   echo "   Waiting 2 minutes for the water to spread..."
   countdown 120
+  # Only save "wet" if the sensor clearly reads wetter than "dry" (lower voltage = wetter)
+  local now
+  while true; do
+    now="$(live_volts)"
+    if [ -n "$dry" ] && [ -n "$now" ] && python3 -c "import sys; sys.exit(not ($dry - $now >= 0.03))"; then
+      break
+    fi
+    red "   The sensor doesn't feel the water yet (dry ${dry} V, now ${now:-?} V)."
+    echo "   Make sure the soil around the whole sensor is soaked, up to the line."
+    if ! ask_yes "   Check again in 1 minute?"; then
+      red "Calibration isn't finished, so Jardinerito won't water by itself yet."
+      echo "Run ./setup.sh calibrate to try again."
+      return 1
+    fi
+    countdown 60
+  done
   press "Calibrate WET"
   sleep 1
   local wet; wet="$(number_value "Calibration wet voltage")"
-  green "   Wet saved (${wet} V)."
-  if [ -n "$dry" ] && [ -n "$wet" ] && python3 -c "import sys; sys.exit(not ($dry - $wet < 0.03))"; then
-    red "Dry and wet are almost the same. Is the sensor plugged in and in the soil? Run ./setup.sh calibrate to try again."
-  elif [ "$in_air" = yes ]; then
+  green "   Wet saved (${wet} V). Calibration done!"
+  if [ "$in_air" = yes ]; then
     echo "Tip: in a few days, when the soil feels dry, open the settings page and look at \"Soil moisture\"."
     echo "Set \"Water below moisture\" a little above that number."
   fi
@@ -351,7 +374,12 @@ notify() {
 }
 
 next_steps() {
-  step "All set! What to do now"
+  if [ "${CALIBRATED:-yes}" = no ]; then
+    step "Almost done: calibration still missing"
+    echo "Run ./setup.sh calibrate when the soil is soaked. Until then it won't water by itself."
+  else
+    step "All set! What to do now"
+  fi
   cat <<EOF
 1. Wait 1 minute, then unplug Jardinerito (it saves its settings once a minute).
 2. Plug it into a USB-C charger next to the plant. The sensor stays in the soil.
@@ -396,21 +424,34 @@ PY
   green "Done. Jardinerito restarts with no Wi-Fi and asks to be calibrated (\"¡Calíbrame!\")."
 }
 
-need_ip() { [ -n "$DEVICE_IP" ] || connect_wifi; }
+need_ip() {  # need_ip [ip]
+  [ -n "$DEVICE_IP" ] && return
+  if [ -n "${1:-}" ]; then
+    DEVICE_IP="$1"
+  elif find_port; then
+    connect_wifi
+    return
+  else
+    echo "Hold the button on Jardinerito for 2 s. The screen shows its IP address."
+    read -r -p "IP address on the screen: " DEVICE_IP
+    DEVICE_IP="${DEVICE_IP// /}"
+  fi
+  check_reachable
+}
 
 # ---------------------------------------------------------------- main
 case "${1:-all}" in
   flash)     flash ;;
   reset)     reset_device ;;
   wifi)      install_tools; connect_wifi force ;;
-  calibrate) install_tools; need_ip; calibrate ;;
-  notify)    install_tools; need_ip; notify ;;
+  calibrate) install_tools; need_ip "${2:-}"; calibrate ;;
+  notify)    install_tools; need_ip "${2:-}"; notify ;;
   all)
     bold "Hola! Let's set up Jardinerito."
     install_tools
     need_port
     connect_wifi
-    calibrate
+    calibrate || CALIBRATED=no
     plant_name
     notify
     next_steps
