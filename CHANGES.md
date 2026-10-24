@@ -71,3 +71,10 @@ M5Stack's M5GFX library shows the AtomS3R ships with either a GC9107 or an ST773
 `model: ST7735`, 132x132 panel memory (offset 2/1, pad 2/3), `invert_colors: true`, `color_order: bgr`
 (same pins). Confirmed on the first device: correct position, green face, pump works.
 If an AtomS3R shows a black screen with this config, it probably has the GC9107 panel.
+
+## 6. Calibration safety fix
+
+Found while testing: after "Calibrate DRY" was saved but before "Calibrate WET", the device counted itself
+as calibrated (wet was still 0, so dry - wet was large), computed a low moisture and ran one pump burst.
+Now moisture stays "not calibrated" until both values have been saved (> 0 V) and are at least 0.03 V apart,
+so it can't water in the middle of calibration.
