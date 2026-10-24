@@ -55,3 +55,10 @@ Requested by the owner: the screen now matches the Spanish gifs in `docs/`.
 - Display `update_interval` 500ms -> 200ms so the animations are smooth. Logs show no slow-loop warnings.
 
 Watering logic, safety limits, pins, and the display model are unchanged. The web settings page stays in English.
+
+## 4. Calibration buttons renamed
+
+"Calibrate DRY (sensor in air)" / "Calibrate WET (sensor in water)" are now "Calibrate DRY" / "Calibrate WET".
+Calibration is now done in the plant's pot: dry soil, then right after a good watering. The old labels
+would have said the opposite on the settings page. `setup.sh` uses the new names, so a device with older
+firmware needs `./setup.sh flash` once.

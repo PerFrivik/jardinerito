@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Jardinerito setup: installs the tools, flashes the firmware (if needed),
-# then walks you through Wi-Fi, calibration and iPhone notifications.
+# Jardinerito setup. Plug Jardinerito into this laptop with USB-C and run it.
+# It installs the tools, connects Jardinerito to your Wi-Fi, calibrates the
+# sensor in your plant's pot and, if you like, sets up phone notifications.
 #
 #   ./setup.sh             full setup
-#   ./setup.sh flash       only flash the firmware over USB
+#   ./setup.sh flash       only install the firmware over USB
+#   ./setup.sh wifi        only connect to (another) Wi-Fi
 #   ./setup.sh calibrate   only redo the calibration
 #   ./setup.sh notify      only set up phone notifications
 #
-# Works on macOS and Linux. Needs Python 3.11+ and the computer on the same Wi-Fi as Jardinerito.
+# Needs Python 3.11+. The laptop must be on the same Wi-Fi you give Jardinerito.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 ESPHOME_VERSION="2026.10.0"
 YAML="jardinerito.yaml"
 DEVICE_IP=""
+PORT=""
 
 # ---------------------------------------------------------------- helpers
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -29,8 +32,8 @@ ask_yes() {  # ask_yes "question" [default y|n]
 }
 countdown() {
   local i
-  for ((i = $1; i > 0; i--)); do printf '\r  %2d s ' "$i"; sleep 1; done
-  printf '\r       \r'
+  for ((i = $1; i > 0; i--)); do printf '\r  %3d s ' "$i"; sleep 1; done
+  printf '\r        \r'
 }
 urlencode() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
 
@@ -45,6 +48,86 @@ number_value() {  # value of a number entity, e.g. a saved calibration voltage
     python3 -c 'import sys, json
 try: print("%.3f" % float(json.load(sys.stdin)["value"]))
 except Exception: print("")'
+}
+
+# Wi-Fi setup over the USB cable (Improv serial protocol, built into the firmware).
+#   improv state  -> prints the device URL if it's already on Wi-Fi
+#   improv wifi   -> sends JW_SSID / JW_PASS, prints the device URL
+# Exit codes: 0 ok, 1 couldn't connect to that Wi-Fi, 2 no answer, 3 not on Wi-Fi yet
+improv() {
+  python - "$PORT" "$1" <<'PY'
+import os, sys, time
+import serial
+
+port, mode = sys.argv[1], sys.argv[2]
+
+def frame(kind, data):
+    b = b"IMPROV" + bytes([1, kind, len(data)]) + data
+    return b + bytes([sum(b) & 0xFF])
+
+def rpc(cmd, payload=b""):
+    return frame(0x03, bytes([cmd, len(payload)]) + payload)
+
+s = serial.Serial()
+s.port, s.baudrate, s.timeout = port, 115200, 0.2
+s.dtr = s.rts = False  # don't reset the board when opening the port
+s.open()
+buf = b""
+
+def packets(seconds):
+    global buf
+    end = time.time() + seconds
+    while time.time() < end:
+        buf += s.read(512)
+        while True:
+            i = buf.find(b"IMPROV")
+            if i < 0:
+                buf = buf[-5:]
+                break
+            if len(buf) < i + 9:
+                break
+            n = buf[i + 8]
+            if len(buf) < i + 10 + n:
+                break
+            pkt, buf = buf[i:i + 10 + n], buf[i + 10 + n:]
+            if sum(pkt[:-1]) & 0xFF == pkt[-1]:
+                yield pkt[7], pkt[9:-1]
+
+def urls(data):  # RPC result: command, length, then (length, string) pairs
+    out, j = [], 2
+    while j < len(data):
+        n = data[j]
+        out.append(data[j + 1:j + 1 + n].decode(errors="replace"))
+        j += 1 + n
+    return [u for u in out if u.startswith("http")]
+
+if mode == "state":
+    for attempt in range(10):
+        s.write(rpc(0x02))  # get current state
+        state = None
+        for kind, data in packets(1.0):
+            if kind == 0x01:
+                state = data[0]
+                if state != 0x04:
+                    sys.exit(3)
+            elif kind == 0x04 and urls(data):
+                print(urls(data)[0])
+                sys.exit(0)
+        if state == 0x04:
+            sys.exit(3)
+    sys.exit(2)
+
+ssid = os.environ["JW_SSID"].encode()
+pw = os.environ["JW_PASS"].encode()
+s.write(rpc(0x01, bytes([len(ssid)]) + ssid + bytes([len(pw)]) + pw))
+for kind, data in packets(100):
+    if kind == 0x02 and data and data[0] == 0x03:  # unable to connect
+        sys.exit(1)
+    if kind == 0x04 and data and data[0] == 0x01 and urls(data):
+        print(urls(data)[0])
+        sys.exit(0)
+sys.exit(2)
+PY
 }
 
 # ---------------------------------------------------------------- steps
@@ -68,7 +151,7 @@ install_tools() {
     fi
   fi
   if [ ! -f secrets.yaml ]; then
-    # Password for wireless firmware updates. Only needed on this computer.
+    # Password for wireless firmware updates. Only needed on this laptop.
     echo "ota_password: \"$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')\"" > secrets.yaml
     echo "Created secrets.yaml (keep it, you need it for wireless updates)."
   fi
@@ -92,80 +175,151 @@ find_port() {
   fi
 }
 
-flash() {
-  step "Flashing the firmware"
-  echo "Plug Jardinerito into this computer with a USB-C data cable."
-  pause
+need_port() {
+  [ -n "$PORT" ] && return
   until find_port; do
-    red "No device found. Try another cable or USB port."
+    red "Jardinerito isn't connected. Plug it into this laptop with a USB-C data cable."
     pause "Press Enter to look again..."
   done
-  echo "Found $PORT"
   if [ "$(uname)" = Linux ] && [ ! -w "$PORT" ]; then
     red "No permission to use $PORT. Run this once, log out and back in, then run ./setup.sh again:"
     echo "  sudo usermod -aG dialout $USER"
     exit 1
   fi
+}
+
+flash() {
+  step "Installing the firmware"
+  need_port
   echo "The first time this downloads a compiler and takes 10-15 minutes."
   until esphome run "$YAML" --device "$PORT" --no-logs; do
-    red "Flashing didn't work. Put it in download mode:"
+    red "That didn't work. Put Jardinerito in download mode:"
     echo "  hold the small reset button on the side for ~2 s until a green light turns on, then let go."
     ask_yes "Try again?" || exit 1
   done
-  green "Flashed! Press the reset button on the side once (or replug it). The plant face should appear."
+  echo "Press the reset button on the side once (or replug it)."
+  pause "Press Enter when the plant face shows on the screen..."
+  green "Firmware installed."
 }
 
-connect_wifi() {
+current_wifi() {  # name of the Wi-Fi this laptop is on, if we can tell
+  if command -v nmcli >/dev/null; then
+    nmcli -t -f active,ssid dev wifi 2>/dev/null | sed -n 's/^yes://p' | head -1
+  fi
+}
+
+set_ip_from_url() { DEVICE_IP="${1#http://}"; DEVICE_IP="${DEVICE_IP%:80}"; DEVICE_IP="${DEVICE_IP%/}"; }
+
+wifi_by_hand() {
+  echo "Let's do it by hand instead:"
+  echo "1. On a phone or laptop, join the Wi-Fi \"Jardinerito-Setup\" (password: plantlove)."
+  echo "2. A page opens (or open http://192.168.4.1 in a browser). Pick your Wi-Fi and type its password."
+  echo "3. Hold the button on Jardinerito for 2 s. The screen shows its IP address."
+  read -r -p "IP address on the screen (e.g. 192.168.1.42): " DEVICE_IP
+  DEVICE_IP="${DEVICE_IP// /}"
+}
+
+connect_wifi() {  # connect_wifi [force]  (force = choose a Wi-Fi even if it already has one)
   step "Wi-Fi"
-  echo "1. On your iPhone, open Settings > Wi-Fi and join \"Jardinerito-Setup\" (password: plantlove)."
-  echo "2. A page opens. Pick your home Wi-Fi and type its password."
-  echo "   (No page? Open http://192.168.4.1 in Safari.)"
-  echo "3. Wait ~20 s, then hold the button on Jardinerito for 2 s. The screen shows its IP address."
-  echo "   This computer must be on the same home Wi-Fi."
-  while true; do
-    read -r -p "IP address on the screen (e.g. 192.168.1.42): " DEVICE_IP
-    DEVICE_IP="${DEVICE_IP// /}"
-    if curl -fsS --max-time 5 "http://$DEVICE_IP/" >/dev/null 2>&1; then
-      green "Connected to Jardinerito at http://$DEVICE_IP"
-      return
-    fi
-    red "Can't reach http://$DEVICE_IP. Check the number and that this computer is on the same Wi-Fi."
+  need_port
+  local url rc=0
+  url="$(improv state)" || rc=$?
+  if [ "$rc" = 0 ] && [ "${1:-}" != force ]; then
+    set_ip_from_url "$url"
+    green "Jardinerito is already on Wi-Fi at http://$DEVICE_IP"
+  elif [ "$rc" = 2 ]; then
+    red "Jardinerito didn't answer over USB."
+    wifi_by_hand
+  else
+    echo "Jardinerito joins your Wi-Fi through the USB cable."
+    echo "It needs a 2.4 GHz Wi-Fi (most home Wi-Fi has one)."
+    local here ssid pass
+    here="$(current_wifi)"
+    while true; do
+      read -r -p "Wi-Fi name${here:+ [$here]}: " ssid
+      ssid="${ssid:-$here}"
+      read -r -s -p "Wi-Fi password: " pass; echo
+      echo "Connecting (up to a minute)..."
+      rc=0
+      url="$(JW_SSID="$ssid" JW_PASS="$pass" improv wifi)" || rc=$?
+      if [ "$rc" = 0 ]; then
+        set_ip_from_url "$url"
+        green "Connected! Jardinerito is at http://$DEVICE_IP"
+        break
+      elif [ "$rc" = 1 ]; then
+        red "Couldn't join \"$ssid\". Check the name and password (capital letters count)."
+      else
+        red "No answer from Jardinerito."
+        wifi_by_hand
+        break
+      fi
+    done
+  fi
+  until curl -fsS --max-time 5 "http://$DEVICE_IP/" >/dev/null 2>&1; do
+    red "This laptop can't reach http://$DEVICE_IP. Is it on the same Wi-Fi as Jardinerito?"
+    pause "Press Enter to try again..."
   done
 }
 
 calibrate() {
   step "Calibration (once)"
-  echo "Jardinerito only waters by itself after this, so it can never flood the plant by accident."
+  echo "Jardinerito learns what dry and wet soil mean in your pot."
+  echo "It only waters by itself after this, so it can never flood the plant by accident."
   echo
-  bold "Dry: hold the sensor in the air, not touching anything."
-  pause "Press Enter when it's in the air, then keep it there..."
+  bold "1. Push the sensor into the soil, up to the line printed on it. Not deeper:"
+  bold "   the top part isn't waterproof. Leave it there for the rest of the calibration."
+  pause
+  echo
+  echo "2. Push a finger 2 cm into the soil."
+  local in_air=no
+  if ask_yes "   Does it feel dry, like the plant could use water now?"; then
+    echo "   Measuring dry soil..."
+  else
+    in_air=yes
+    echo "   Then we use air as \"dry\". Pull the sensor out and hold it in the air, not touching anything."
+    pause "   Press Enter when it's in the air, then keep it there..."
+  fi
   countdown 25  # the sensor averages its readings, give it time to settle
-  press "Calibrate DRY (sensor in air)"
+  press "Calibrate DRY"
   sleep 1
   local dry; dry="$(number_value "Calibration dry voltage")"
-  green "Dry saved (${dry} V)."
+  green "   Dry saved (${dry} V)."
+  if [ "$in_air" = yes ]; then
+    pause "   Push the sensor back into the soil, up to the line, then press Enter..."
+  fi
   echo
-  bold "Wet: put the sensor in a glass of water, up to the line printed on it. NOT deeper:"
-  bold "     the top part isn't waterproof."
-  pause "Press Enter when it's in the water, then keep it there..."
-  countdown 25
-  press "Calibrate WET (sensor in water)"
+  echo "3. Water the plant well by hand, until the soil is soaked."
+  pause "   Press Enter when you've watered it..."
+  echo "   Waiting 2 minutes for the water to spread..."
+  countdown 120
+  press "Calibrate WET"
   sleep 1
   local wet; wet="$(number_value "Calibration wet voltage")"
-  green "Wet saved (${wet} V)."
+  green "   Wet saved (${wet} V)."
   if [ -n "$dry" ] && [ -n "$wet" ] && python3 -c "import sys; sys.exit(not ($dry - $wet < 0.03))"; then
-    red "Dry and wet are very close. Is the sensor plugged in? Run ./setup.sh calibrate to try again."
+    red "Dry and wet are almost the same. Is the sensor plugged in and in the soil? Run ./setup.sh calibrate to try again."
+  elif [ "$in_air" = yes ]; then
+    echo "Tip: in a few days, when the soil feels dry, open the settings page and look at \"Soil moisture\"."
+    echo "Set \"Water below moisture\" a little above that number."
   fi
 }
 
+plant_name() {
+  local name
+  echo
+  read -r -p "What's the plant called? (Enter to skip) " name
+  [ -n "$name" ] && set_text "Plant name" "$name" && green "Hola, $name!"
+  return 0
+}
+
 notify() {
-  step "iPhone notifications"
-  echo "Jardinerito can message you when it waters, and when the water jar is empty."
-  ask_yes "Set it up now?" || return 0
+  step "Phone notifications (optional)"
+  echo "Jardinerito can send a message to your phone when it waters, and when the water jar is empty."
+  ask_yes "Set it up now?" n || return 0
   local topic
   topic="jardinerito-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
-  echo "1. Install \"ntfy\" from the App Store: https://apps.apple.com/app/ntfy/id1625396347"
-  echo "2. In ntfy tap +, type this topic, tap Subscribe:  $(bold "$topic")"
+  echo "1. Install the free \"ntfy\" app on your phone (links on https://ntfy.sh)."
+  echo "2. In ntfy, tap +, type this topic and subscribe:  $(bold "$topic")"
   echo "   (Allow notifications when it asks.)"
   pause "Press Enter when you've subscribed..."
   set_text "ntfy topic" "$topic"
@@ -178,26 +332,18 @@ notify() {
   fi
 }
 
-plant_name() {
-  local name
-  read -r -p "What's the plant called? (Enter to skip) " name
-  [ -n "$name" ] && set_text "Plant name" "$name" && green "Hola, $name!"
-  return 0
-}
-
 next_steps() {
   step "All set! What to do now"
   cat <<EOF
-1. Push the sensor into the soil up to the line, no deeper.
-2. Put the intake tube in a jar of water. Point the outlet tube at the soil.
-3. Press the button once: it pumps for 3 s. Water should drip onto the soil.
-   (Press again to stop.)
-4. Watch the face: happy = fine, yellow + sweat drop = thirsty (it will water itself),
-   red "refill" = the jar is empty: refill it and press the button.
-5. Moving it from the computer to a USB charger? Wait 1 minute first: it saves its settings once a minute.
+1. Wait 1 minute, then unplug Jardinerito (it saves its settings once a minute).
+2. Plug it into a USB-C charger next to the plant. The sensor stays in the soil.
+3. Put the intake tube in a jar of water. Point the outlet tube at the soil.
+4. Press the button once: it pumps for 3 s and water drips onto the soil. (Press again to stop.)
+5. From now on it runs by itself. Watch the face:
+   happy = fine, yellow + sweat drop = thirsty (it waters itself),
+   "¡Agua, por favor!" = the jar is empty: refill it and press the button.
 
-Settings (watering amounts, notifications, names): http://${DEVICE_IP:-<IP from the screen>}
-Hold the button for 2 s any time to see the address again.
+Settings page (watering amounts, names, notifications): http://${DEVICE_IP:-<hold the button 2 s to see the address>}
 EOF
 }
 
@@ -206,12 +352,14 @@ need_ip() { [ -n "$DEVICE_IP" ] || connect_wifi; }
 # ---------------------------------------------------------------- main
 case "${1:-all}" in
   flash)     install_tools; flash ;;
-  calibrate) need_ip; calibrate ;;
-  notify)    need_ip; notify ;;
+  wifi)      install_tools; connect_wifi force ;;
+  calibrate) install_tools; need_ip; calibrate ;;
+  notify)    install_tools; need_ip; notify ;;
   all)
     bold "Hola! Let's set up Jardinerito."
     install_tools
-    if ask_yes "Does Jardinerito need the firmware installed? (No if it already shows a face)" n; then
+    need_port
+    if ask_yes "Does Jardinerito need the firmware installed? (No if it shows a plant face)" n; then
       flash
     fi
     connect_wifi
@@ -220,5 +368,5 @@ case "${1:-all}" in
     notify
     next_steps
     ;;
-  *) sed -n '2,9p' "$0"; exit 1 ;;
+  *) sed -n '2,11p' "$0"; exit 1 ;;
 esac

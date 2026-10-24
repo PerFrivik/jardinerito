@@ -1,6 +1,6 @@
 # Jardinerito 🌱
 
-A little gardener for your plant: it checks the soil, waters from a jar by itself, shows how the plant feels and messages your iPhone.
+A little gardener for your plant: it checks the soil, waters from a jar by itself, shows how the plant feels and can message your phone.
 
 | ¡Olé! | ¡Tengo sed! | ¡Glu, glu! | ¡Agua, por favor! | Siesta |
 |:---:|:---:|:---:|:---:|:---:|
@@ -11,7 +11,7 @@ A little gardener for your plant: it checks the soil, waters from a jar by itsel
 
 ## Setup
 
-Plug Jardinerito in with USB-C, then on a Mac (or Linux) computer:
+Put the plant pot next to your laptop, plug Jardinerito into the laptop with USB-C, then run:
 
 ```bash
 git clone https://github.com/PerFrivik/jardinerito.git
@@ -19,12 +19,17 @@ cd jardinerito
 ./setup.sh
 ```
 
-It walks you through everything, step by step: Wi-Fi, calibrating the sensor and iPhone notifications.
+It walks you through it step by step:
+1. **Wi-Fi:** type your Wi-Fi name and password. They go to Jardinerito through the cable.
+2. **Calibration in the pot:** it measures the soil while it's dry, then again after you water it well.
+   This is how it learns when your plant needs water.
+3. **Phone notifications** (optional, last): messages when it waters or the jar is empty.
 
 Good to know:
 - **Push the sensor into the soil only up to the line printed on it.** The top part isn't waterproof.
 - It only waters by itself after calibration, so it can never flood the plant by accident.
-- Watering works without Wi-Fi. If it loses Wi-Fi, join `Jardinerito-Setup` (password `plantlove`) on your phone to pick a new one.
+- After setup, wait 1 minute before unplugging it. Then any USB-C charger next to the plant will do.
+- Watering works without Wi-Fi. New Wi-Fi? Run `./setup.sh wifi`, or join `Jardinerito-Setup` (password `plantlove`) from any phone or laptop.
 - Redo a single step any time: `./setup.sh calibrate` or `./setup.sh notify`.
 
 ## The button

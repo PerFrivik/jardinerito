@@ -366,7 +366,7 @@ button:
       - lambda: id(mark_watered).execute();
 
   - platform: template
-    name: "Calibrate DRY (sensor in air)"
+    name: "Calibrate DRY"
     entity_category: config
     on_press:
       - number.set:
@@ -374,7 +374,7 @@ button:
           value: !lambda return id(soil_v).state;
 
   - platform: template
-    name: "Calibrate WET (sensor in water)"
+    name: "Calibrate WET"
     entity_category: config
     on_press:
       - number.set:
