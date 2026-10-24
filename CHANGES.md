@@ -63,11 +63,11 @@ Calibration is now done in the plant's pot: dry soil, then right after a good wa
 would have said the opposite on the settings page. `setup.sh` uses the new names, so a device with older
 firmware needs `./setup.sh flash` once.
 
-## 5. Display: real GC9107 settings (black screen fix)
+## 5. Display: ST7735S panel settings (black screen fix)
 
-With `model: M5STACK-ATOMS3R-GC9107` the backlight came on but the screen stayed black. That ESPHome model
-uses an ST7789-style init with offset 2/1 and inverted colours, which matches the AtomS3R's *other* panel
-(ST7735S) in M5Stack's M5GFX library. The panel is now configured like M5GFX's `Panel_GC9107` for the AtomS3R:
-`model: CUSTOM` with the GC9107 init sequence, 128x128 at row offset 32, colours not inverted, same pins.
-Confirmed working on the first device. AtomS3R units with an ST7735S panel would need the ST7735 settings
-instead (see the "Display fallback" notes).
+With `model: M5STACK-ATOMS3R-GC9107` the backlight came on but the screen stayed black.
+M5Stack's M5GFX library shows the AtomS3R ships with either a GC9107 or an ST7735S panel. A GC9107 init
+(offset 32) gave a picture with wrapped rows and inverted colours, so this unit has the ST7735S:
+`model: ST7735`, 132x132 panel memory (offset 2/1, pad 2/3), `invert_colors: true`, `color_order: bgr`
+(same pins). Confirmed on the first device: correct position, green face, pump works.
+If an AtomS3R shows a black screen with this config, it probably has the GC9107 panel.
