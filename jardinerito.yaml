@@ -20,7 +20,7 @@ substitutions:
   friendly_name: Jardinerito
   # If the screen is upside down, change to 180 and re-flash.
   display_rotation: "0"
-  birthday_name: "Maria"
+  birthday_name: "María"
   # Default ntfy topic (can be changed later on the device web page).
   ntfy_default_topic: ""
 
@@ -603,12 +603,18 @@ font:
   - file: "gfonts://Roboto@500"
     id: font_s
     size: 13
+    glyphsets: [GF_Latin_Kernel]
+    glyphs: ["¡¿áéíóúñÁÉÍÓÚÑü"]
   - file: "gfonts://Roboto@700"
     id: font_m
     size: 17
+    glyphsets: [GF_Latin_Kernel]
+    glyphs: ["¡¿áéíóúñÁÉÍÓÚÑü"]
   - file: "gfonts://Roboto@700"
     id: font_l
     size: 26
+    glyphsets: [GF_Latin_Kernel]
+    glyphs: ["¡¿áéíóúñÁÉÍÓÚÑü"]
 
 color:
   - id: c_green
@@ -631,13 +637,54 @@ color:
     hex: "000000"
   - id: c_red
     hex: "FF5A5A"
+  # flower, sun, birthday (Spanish flag)
+  - id: c_flower
+    hex: "E62832"
+  - id: c_flower_in
+    hex: "B4141E"
+  - id: c_yellow
+    hex: "FFC81E"
+  - id: c_orange
+    hex: "FF7800"
+  - id: c_sky
+    hex: "78C8FF"
+  # wilted flower (thirsty / jar empty)
+  - id: c_wilt
+    hex: "B95541"
+  - id: c_wilt_in
+    hex: "823223"
+  - id: c_wilt_stem
+    hex: "78823C"
+  - id: c_dead
+    hex: "8C5A32"
+  - id: c_dead_in
+    hex: "644123"
+  - id: c_dead_stem
+    hex: "6E5F32"
+  # siesta (night)
+  - id: c_night
+    hex: "040816"
+  - id: c_night_head
+    hex: "3C6E5A"
+  - id: c_night_leaf
+    hex: "28643C"
+  - id: c_lavender
+    hex: "96AAFF"
+  - id: c_moon
+    hex: "E6DC96"
+  - id: c_bud
+    hex: "AA2337"
+  - id: c_bud_in
+    hex: "781428"
+  - id: c_sepal
+    hex: "286E3C"
 
 display:
   - platform: mipi_spi
     id: screen
     model: M5STACK-ATOMS3R-GC9107
     rotation: ${display_rotation}
-    update_interval: 500ms
+    update_interval: 200ms
     lambda: |-
       const uint32_t now = millis();
       it.fill(id(c_black));
@@ -646,16 +693,16 @@ display:
       if ((int32_t) (now - id(info_until)) < 0) {
         it.print(64, 4, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Jardinerito");
         if (wifi::global_wifi_component->is_connected()) {
-          it.print(4, 30, id(font_s), id(c_green), "Wi-Fi connected");
+          it.print(4, 30, id(font_s), id(c_green), "Wi-Fi conectado");
           it.printf(4, 48, id(font_s), id(c_white), "%.20s", id(wifi_ssid).state.c_str());
           it.printf(4, 66, id(font_s), id(c_white), "%s", id(ip_addr).state.c_str());
-          it.print(4, 90, id(font_s), id(c_grey), "Open the IP in a");
-          it.print(4, 106, id(font_s), id(c_grey), "browser for settings");
+          it.print(4, 90, id(font_s), id(c_grey), "Abre la IP en el");
+          it.print(4, 106, id(font_s), id(c_grey), "navegador");
         } else {
-          it.print(4, 28, id(font_s), id(c_red), "No Wi-Fi yet");
-          it.print(4, 46, id(font_s), id(c_white), "Join hotspot:");
+          it.print(4, 28, id(font_s), id(c_red), "Sin Wi-Fi todavía");
+          it.print(4, 46, id(font_s), id(c_white), "Conéctate a:");
           it.print(4, 62, id(font_s), id(c_green), "Jardinerito-Setup");
-          it.print(4, 80, id(font_s), id(c_white), "password:");
+          it.print(4, 80, id(font_s), id(c_white), "contraseña:");
           it.print(4, 96, id(font_s), id(c_green), "plantlove");
         }
         return;
@@ -673,23 +720,25 @@ display:
       }
       if (bday) {
         // confetti
-        Color conf[4] = {id(c_pink), id(c_blue), id(c_dry), id(c_green)};
-        for (int i = 0; i < 22; i++) {
-          int x = (i * 37 + 11) % 124;
+        for (int i = 0; i < 26; i++) {
+          int x = (i * 37 + 11) % 125;
           int y = (int) (((now / 40) + i * 23) % 140) - 8;
-          it.filled_rectangle(x, y, 3, 3, conf[i % 4]);
+          it.filled_rectangle(x, y, 3, (i % 3) ? 2 : 4, (i % 2) ? id(c_yellow) : id(c_flower));
         }
-        it.print(64, 6, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Happy");
-        it.print(64, 26, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Birthday");
-        it.print(64, 48, id(font_l), id(c_pink), TextAlign::TOP_CENTER, "${birthday_name}!");
-        // cake
-        it.filled_rectangle(40, 104, 48, 20, id(c_pink));
-        it.filled_rectangle(40, 98, 48, 7, id(c_white));
-        for (int k = 0; k < 3; k++) {
-          int candle_x = 50 + k * 13;
-          it.filled_rectangle(candle_x, 88, 4, 10, id(c_blue));
+        it.print(64, 4, id(font_m), id(c_yellow), TextAlign::TOP_CENTER, "¡Feliz");
+        it.print(64, 22, id(font_m), id(c_white), TextAlign::TOP_CENTER, "cumpleaños,");
+        it.print(64, 40, id(font_l), id(c_flower), TextAlign::TOP_CENTER, "${birthday_name}!");
+        // cake in Spanish flag colours
+        it.filled_rectangle(38, 95, 52, 6, id(c_white));
+        it.filled_rectangle(38, 101, 52, 7, id(c_flower));
+        it.filled_rectangle(38, 108, 52, 8, id(c_yellow));
+        it.filled_rectangle(38, 116, 52, 8, id(c_flower));
+        for (int k = 0; k < 4; k++) {
+          int candle_x = 44 + k * 12;
+          it.filled_rectangle(candle_x, 84, 4, 11, (k % 2) ? id(c_sky) : id(c_pink));
           int fr = ((now / 250) + k) % 2 ? 3 : 2;
-          it.filled_circle(candle_x + 2, 84, fr, id(c_dry));
+          it.filled_circle(candle_x + 2, 80, fr, id(c_yellow));
+          it.filled_circle(candle_x + 2, 81, 1, id(c_orange));
         }
         return;
       }
@@ -699,18 +748,69 @@ display:
       const bool drinking = id(pump).state || (int32_t) (now - id(drinking_until)) < 0;
       const bool thirsty = calibrated && m < id(threshold).state;
       const bool sad = id(jar_empty) && !drinking;
+      const bool droopy = (thirsty || sad) && !drinking;
+      // Siesta: night (22:00-07:00) and not woken by the button; same rule as the backlight dimming
+      bool siesta = false;
+      if (!drinking && !sad && (int32_t) (now - id(wake_until)) >= 0) {
+        auto t = id(sntp_time).now();
+        siesta = t.is_valid() && (t.hour >= 22 || t.hour < 7);
+      }
       const int cx = 64, cy = 46, r = 28;
+      const int ex = 11, ey = cy - 6;
       const float PI_F = 3.14159265f;
 
+      if (siesta) {
+        it.fill(id(c_night));
+        // stars + moon
+        const int stars[4][2] = {{10, 10}, {6, 40}, {117, 60}, {40, 72}};
+        for (int k = 0; k < 4; k++)
+          if (((now / 700) + k) % 3) it.draw_pixel_at(stars[k][0], stars[k][1], id(c_white));
+        it.filled_circle(107, 12, 7, id(c_moon));
+        it.filled_circle(111, 9, 6, id(c_night));
+        // Zzz floating up
+        for (int k = 0; k < 3; k++) {
+          int ph = (int) ((now / 120 + k * 12) % 36);
+          it.print(32 - ph / 2, 40 - ph, ph < 18 ? id(font_s) : id(font_m), id(c_lavender), ph < 12 ? "z" : "Z");
+        }
+        // leaves, head, flower bud
+        it.line(cx, cy - r, cx, cy - r - 8, id(c_night_leaf));
+        it.filled_triangle(cx, cy - r - 6, cx - 18, cy - r - 16, cx - 4, cy - r - 18, id(c_night_leaf));
+        it.filled_triangle(cx, cy - r - 6, cx + 18, cy - r - 16, cx + 4, cy - r - 18, id(c_night_leaf));
+        it.filled_circle(cx, cy, r, id(c_night_head));
+        it.filled_triangle(88, 15, 82, 30, 95, 30, id(c_bud));
+        it.filled_circle(88, 29, 6, id(c_bud));
+        it.line(88, 19, 88, 34, id(c_bud_in));
+        it.filled_triangle(79, 33, 88, 33, 86, 39, id(c_sepal));
+        it.filled_triangle(97, 33, 88, 33, 90, 39, id(c_sepal));
+        // sleeping face
+        it.filled_rectangle(cx - ex - 5, ey, 9, 1, id(c_black));
+        it.filled_rectangle(cx + ex - 3, ey, 9, 1, id(c_black));
+        it.filled_circle(cx, cy + 12, 3, id(c_black));
+        it.print(64, 86, id(font_m), id(c_lavender), TextAlign::TOP_CENTER, "Siesta...");
+        it.print(64, 106, id(font_s), id(c_grey), TextAlign::TOP_CENTER, "Zzz hasta mañana");
+        return;
+      }
+
+      // ---------------- Sun (happy) ----------------
+      if (calibrated && !droopy && !drinking) {
+        it.filled_circle(14, 14, 5, id(c_yellow));
+        float rot = (now % 4000) * 2.0f * PI_F / 4000.0f / 8.0f;
+        for (int k = 0; k < 8; k++) {
+          float a = rot + k * PI_F / 4.0f;
+          it.line(14 + (int) (8 * cosf(a)), 14 + (int) (8 * sinf(a)),
+                  14 + (int) (11 * cosf(a)), 14 + (int) (11 * sinf(a)), id(c_yellow));
+        }
+      }
+
       // ---------------- Leaves ----------------
-      Color head = (thirsty || sad) && !drinking ? id(c_dry) : id(c_green);
-      Color leaf = (thirsty || sad) && !drinking ? id(c_dryleaf) : id(c_leaf);
-      it.line(cx, cy - r, cx, cy - r - 8, leaf);
-      if ((thirsty || sad) && !drinking) {
-        // drooping leaves
+      Color head = droopy ? id(c_dry) : id(c_green);
+      Color leaf = droopy ? id(c_dryleaf) : id(c_leaf);
+      if (droopy) {
+        it.line(cx, cy - r, cx, cy - r - 8, leaf);
         it.filled_triangle(cx, cy - r - 6, cx - 20, cy - r + 2, cx - 10, cy - r - 10, leaf);
         it.filled_triangle(cx, cy - r - 6, cx + 20, cy - r + 2, cx + 10, cy - r - 10, leaf);
       } else {
+        it.line(cx, cy - r, cx, cy - r - 8, leaf);
         it.filled_triangle(cx, cy - r - 6, cx - 18, cy - r - 16, cx - 4, cy - r - 18, leaf);
         it.filled_triangle(cx, cy - r - 6, cx + 18, cy - r - 16, cx + 4, cy - r - 18, leaf);
       }
@@ -718,8 +818,30 @@ display:
       // ---------------- Head ----------------
       it.filled_circle(cx, cy, r, head);
 
+      // ---------------- Flower ----------------
+      if (droopy) {
+        // wilted: drooping stem + heart-shaped flower + a falling petal
+        Color fl = sad ? id(c_dead) : id(c_wilt);
+        Color fl_in = sad ? id(c_dead_in) : id(c_wilt_in);
+        Color stem = sad ? id(c_dead_stem) : id(c_wilt_stem);
+        for (int o = 0; o < 2; o++) {
+          it.line(82, 27 + o, 88, 23 + o, stem);
+          it.line(88, 23 + o, 92, 25 + o, stem);
+          it.line(92 + o, 25, 95 + o, 32, stem);
+        }
+        it.filled_circle(88, 38, 5, fl);
+        it.filled_circle(98, 38, 5, fl);
+        it.filled_triangle(83, 40, 103, 40, 93, 47, fl);
+        it.filled_circle(93, 36, 3, fl_in);
+        int pp = (int) ((now / 120) % 24);
+        if (pp < 16) it.filled_circle(97 + pp / 6, 50 + pp, 2, fl);
+      } else {
+        it.filled_circle(84, 24, 7, id(c_flower));
+        it.filled_circle(84, 24, 3, id(c_flower_in));
+        it.filled_circle(84, 24, 1, id(c_yellow));
+      }
+
       // ---------------- Eyes ----------------
-      const int ex = 11, ey = cy - 6;
       if (drinking) {
         // happy closed eyes  ^ ^
         it.line(cx - ex - 4, ey + 2, cx - ex, ey - 2, id(c_black));
@@ -729,10 +851,21 @@ display:
       } else if (!calibrated) {
         it.filled_circle(cx - ex, ey, 3, id(c_black));
         it.filled_circle(cx + ex, ey, 3, id(c_black));
-      } else if (thirsty || sad) {
+      } else if (droopy) {
         // tired half-closed eyes
         it.filled_rectangle(cx - ex - 4, ey, 9, 3, id(c_black));
         it.filled_rectangle(cx + ex - 4, ey, 9, 3, id(c_black));
+        if (sad) {
+          // tear rolling down from the left eye
+          int tp = (int) ((now / 150) % 14);
+          it.filled_circle(cx - ex - 1, ey + 5 + tp, 2, id(c_blue));
+        } else {
+          // sweat drop sliding down the left side
+          int sp = (int) ((now / 150) % 10);
+          int sy = cy - 14 + sp;
+          it.filled_circle(cx - r + 3, sy, 3, id(c_blue));
+          it.filled_triangle(cx - r, sy - 1, cx - r + 6, sy - 1, cx - r + 3, sy - 7, id(c_blue));
+        }
       } else {
         // blink every ~5 s
         bool blink = (now / 500) % 10 == 0;
@@ -752,26 +885,21 @@ display:
       // ---------------- Mouth ----------------
       if (drinking) {
         it.filled_circle(cx, cy + 12, 5, id(c_black));
-        // falling drops
-        int phase = (now / 150) % 12;
-        for (int k = 0; k < 3; k++) {
-          int dy = ((phase + k * 4) % 12) * 2;
-          it.filled_circle(cx - 30 + k * 30, 2 + dy, 2, id(c_blue));
+        // drops falling from the sky
+        const int drop_x[6] = {8, 24, 46, 78, 96, 108};
+        for (int k = 0; k < 6; k++) {
+          int dy = (int) (((now / 60) + k * 7) % 44);
+          it.filled_circle(drop_x[k], dy, 2, id(c_blue));
         }
       } else if (!calibrated) {
         it.line(cx - 8, cy + 12, cx + 8, cy + 12, id(c_black));
-        it.print(cx + r + 2, cy - r, id(font_m), id(c_white), "?");
-      } else if (thirsty || sad) {
+        it.print(cx + r + 6, cy - r + 4, id(font_m), id(c_white), "?");
+      } else if (droopy) {
         for (int a = 20; a <= 160; a += 8) {
           float rad = a * PI_F / 180.0f;
           int x = cx + (int) (12 * cosf(rad));
           int y = cy + 18 - (int) (7 * sinf(rad));
           it.filled_circle(x, y, 1, id(c_black));
-        }
-        if (thirsty && !sad) {
-          // sweat drop
-          it.filled_circle(cx + r - 2, cy - 12, 3, id(c_blue));
-          it.filled_triangle(cx + r - 5, cy - 13, cx + r + 1, cy - 13, cx + r - 2, cy - 19, id(c_blue));
         }
       } else {
         for (int a = 20; a <= 160; a += 8) {
@@ -784,8 +912,8 @@ display:
 
       // ---------------- Bottom panel ----------------
       if (!calibrated) {
-        it.print(64, 84, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Calibrate me");
-        it.print(64, 106, id(font_s), id(c_grey), TextAlign::TOP_CENTER, "hold button = info");
+        it.print(64, 84, id(font_m), id(c_white), TextAlign::TOP_CENTER, "¡Calíbrame!");
+        it.print(64, 106, id(font_s), id(c_grey), TextAlign::TOP_CENTER, "Mantén 2 s = info");
         return;
       }
 
@@ -798,15 +926,21 @@ display:
       it.line(tx, by - 2, tx, by + bh + 1, id(c_white));
 
       if (sad) {
-        it.printf(4, 96, id(font_s), id(c_red), "Soil %.0f%%  Refill", m);
-        it.print(4, 112, id(font_s), id(c_red), "jar, then press me");
+        it.print(4, 96, id(font_s), id(c_red), "¡Agua, por favor!");
+        it.print(4, 112, id(font_s), id(c_red), "Rellena y pulsa :)");
         return;
       }
       if (drinking) {
-        it.printf(4, 96, id(font_s), id(c_blue), "Soil %.0f%%  Drinking", m);
-      } else {
-        it.printf(4, 96, id(font_s), thirsty ? id(c_dry) : id(c_white), "Soil %.0f%%  %s", m, thirsty ? "Thirsty" : "Happy");
+        it.print(4, 96, id(font_s), id(c_blue), "¡Glu, glu, glu!");
+        it.printf(4, 112, id(font_s), id(c_grey), "Bebiendo... %.0f%%", m);
+        return;
       }
+      if (thirsty) {
+        it.printf(4, 96, id(font_s), id(c_dry), "¡Tengo sed! %.0f%%", m);
+        it.print(4, 112, id(font_s), id(c_grey), "Voy a beber pronto");
+        return;
+      }
+      it.printf(4, 96, id(font_s), id(c_white), "¡Olé! Humedad %.0f%%", m);
 
       // last watered
       long ago = -1;
@@ -817,13 +951,13 @@ display:
         if (t.is_valid()) ago = (long) t.timestamp - id(last_watered_epoch);
       }
       if (ago < 0) {
-        it.print(4, 112, id(font_s), id(c_grey), id(last_watered_epoch) != 0 ? "Watered: --" : "Not watered yet");
+        it.print(4, 112, id(font_s), id(c_grey), id(last_watered_epoch) != 0 ? "Regada: --" : "Aún sin regar");
       } else if (ago < 120) {
-        it.print(4, 112, id(font_s), id(c_grey), "Watered just now");
+        it.print(4, 112, id(font_s), id(c_grey), "Regada justo ahora");
       } else if (ago < 3600) {
-        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld min ago", ago / 60);
+        it.printf(4, 112, id(font_s), id(c_grey), "Regada hace %ld min", ago / 60);
       } else if (ago < 172800) {
-        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld h ago", ago / 3600);
+        it.printf(4, 112, id(font_s), id(c_grey), "Regada hace %ld h", ago / 3600);
       } else {
-        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld days ago", ago / 86400);
+        it.printf(4, 112, id(font_s), id(c_grey), "Regada hace %ld días", ago / 86400);
       }

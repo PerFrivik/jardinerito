@@ -41,3 +41,17 @@ The setup hotspot password `plantlove` stays in the YAML on purpose. It is the d
 first-time setup password (see README).
 
 No pins, watering/safety logic, timings or display settings were changed.
+
+## 3. Spanish screens (to match `docs/*.gif`)
+
+Requested by the owner: the screen now matches the Spanish gifs in `docs/`.
+- All screen text in Spanish ("¡Olé! Humedad 62%", "¡Tengo sed!", "¡Glu, glu, glu!", "¡Agua, por favor!",
+  info page, "¡Calíbrame!"). Fonts get the extra glyphs `¡¿áéíóúñÁÉÍÓÚÑü`.
+- New decorations: sun + red flower when happy, wilted flower with falling petal when thirsty / jar empty,
+  sweat drop (thirsty), tear (jar empty), drops from the sky while drinking.
+- New "Siesta" night screen (22:00-07:00, same rule as the existing backlight dimming; a button press wakes it).
+  Not shown while drinking or when the jar is empty.
+- Birthday screen: "¡Feliz cumpleaños, María!" with a Spanish-flag cake. `birthday_name` is now `María`.
+- Display `update_interval` 500ms -> 200ms so the animations are smooth. Logs show no slow-loop warnings.
+
+Watering logic, safety limits, pins, and the display model are unchanged. The web settings page stays in English.

@@ -37,7 +37,7 @@ Press once to water now (press again to stop). Hold for 2 s to see the address o
 
 When the soil is below 35 %, it pumps 3 s, then waits 15 min for the water to spread before checking again. At most 6 times a day, and the pump never runs longer than 15 s.
 If watering 3 times in a row doesn't help, the jar is probably empty: refill it and press the button.
-The screen dims from 22:00 to 07:00. All of these can be changed on the settings page.
+At night (22:00 to 07:00) it takes a siesta and the screen dims. All of these can be changed on the settings page.
 
 ## Modifying the software
 
