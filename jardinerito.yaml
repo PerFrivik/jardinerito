@@ -1,0 +1,829 @@
+# =====================================================================
+#  Jardinerito  -  M5Stack AtomS3R + M5Stack Unit Watering (U101)
+#  Grove cable: Yellow = G2 -> pump enable, White = G1 -> soil sensor
+#
+#  Screen:   plant face (happy / thirsty / drinking / refill jar)
+#            + moisture bar + "watered Xh ago". Dims at night.
+#  Button:   short press  = water now (press again to stop)
+#            long press   = Wi-Fi / setup info for 15 s
+#  Safety:   short bursts, soak wait, daily cap, 15 s hard pump limit,
+#            "jar probably empty" detection, auto-watering only after
+#            calibration.
+#  Phone:    ntfy push notifications (set topic on the device web page)
+#  Wi-Fi:    no Wi-Fi saved -> hotspot "Jardinerito-Setup" (pw plantlove)
+#            with captive portal to choose Wi-Fi. Same if saved Wi-Fi
+#            is gone for >1 min.
+# =====================================================================
+
+substitutions:
+  name: jardinerito
+  friendly_name: Jardinerito
+  # If the screen is upside down, change to 180 and re-flash.
+  display_rotation: "0"
+  birthday_name: "Maria"
+  # Default ntfy topic (can be changed later on the device web page).
+  ntfy_default_topic: ""
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  on_boot:
+    priority: 200
+    then:
+      - lambda: |-
+          // LP5562 LED driver drives the LCD backlight (same init as M5GFX)
+          id(lp5562).write_byte(0x00, 0x40);   // CHIP_EN
+          delay(2);
+          id(lp5562).write_byte(0x08, 0x01);   // internal clock
+          id(lp5562).write_byte(0x70, 0x00);   // all channels controlled by I2C PWM regs
+          id(lp5562).write_byte(0x0E, 200);    // W channel (backlight) PWM
+          id(bl_current) = 200;
+          id(wake_until) = millis() + 30000;
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: INFO
+
+api:
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  id: wifi_comp
+  reboot_timeout: 0s
+  ap:
+    ssid: "Jardinerito-Setup"
+    password: "plantlove"
+    ap_timeout: 1min
+
+captive_portal:
+
+improv_serial:
+
+web_server:
+  port: 80
+  version: 3
+
+http_request:
+  id: http_client
+  verify_ssl: false
+  timeout: 10s
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Zurich
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - lambda: |-
+              id(bursts_today) = 0;
+              id(limit_alerted) = false;
+
+# ---------------------------------------------------------------------
+#  Hardware
+# ---------------------------------------------------------------------
+i2c:
+  id: bus_int
+  sda: GPIO45
+  scl: GPIO0
+  scan: false
+  frequency: 400kHz
+
+i2c_device:
+  - id: lp5562
+    address: 0x30
+    i2c_id: bus_int
+
+spi:
+  clk_pin: GPIO15
+  mosi_pin: GPIO21
+
+switch:
+  - platform: gpio
+    id: pump
+    name: "Pump"
+    pin: GPIO2
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: pump_watchdog
+      - lambda: |-
+          id(drinking_until) = millis() + 20000;
+          id(wake_until) = millis() + 30000;
+    on_turn_off:
+      - script.stop: pump_watchdog
+      - lambda: id(drinking_until) = millis() + 8000;
+
+  - platform: template
+    id: auto_water
+    name: "Auto watering"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: mdi:sprinkler
+
+binary_sensor:
+  - platform: gpio
+    id: main_button
+    name: "Button"
+    pin:
+      number: GPIO41
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on_off: 20ms
+    on_press:
+      - lambda: id(wake_until) = millis() + 30000;
+      - script.execute: update_backlight
+    on_multi_click:
+      # double press -> birthday screen
+      - timing:
+          - ON for at most 0.5s
+          - OFF for at most 0.4s
+          - ON for at most 0.5s
+          - OFF for at least 0.2s
+        then:
+          - lambda: id(bday_until) = millis() + 12000;
+      # single short press -> water now (or stop pump)
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.45s
+        then:
+          - if:
+              condition:
+                switch.is_on: pump
+              then:
+                - script.execute: stop_pump
+              else:
+                - lambda: |-
+                    // a manual press also means "I refilled / checked the jar"
+                    id(jar_empty) = false;
+                    id(fail_bursts) = 0;
+                - script.execute:
+                    id: pump_burst
+                    secs: !lambda return (int) id(burst_secs).state;
+                - lambda: id(mark_watered).execute();
+      # long press -> Wi-Fi / setup info
+      - timing:
+          - ON for at least 1.5s
+        then:
+          - lambda: id(info_until) = millis() + 15000;
+
+sensor:
+  - platform: adc
+    id: soil_v
+    name: "Soil sensor voltage"
+    pin: GPIO1
+    attenuation: 12db
+    update_interval: 2s
+    accuracy_decimals: 3
+    filters:
+      - median:
+          window_size: 7
+          send_every: 5
+          send_first_at: 3
+    entity_category: diagnostic
+
+  - platform: template
+    id: moisture
+    name: "Soil moisture"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    device_class: moisture
+    update_interval: 10s
+    lambda: |-
+      float dry = id(cal_dry).state;
+      float wet = id(cal_wet).state;
+      float v = id(soil_v).state;
+      if (isnan(v) || isnan(dry) || isnan(wet)) return NAN;
+      // capacitive sensor: voltage goes DOWN when wetter
+      if (dry - wet < 0.03f) return NAN;   // not calibrated
+      float pct = (dry - v) / (dry - wet) * 100.0f;
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      return pct;
+
+  - platform: template
+    name: "Bursts today"
+    lambda: return id(bursts_today);
+    update_interval: 60s
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: wifi_signal
+    name: "Wi-Fi signal"
+    update_interval: 120s
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_addr
+      name: "IP address"
+    ssid:
+      id: wifi_ssid
+      name: "Wi-Fi network"
+
+  - platform: template
+    id: status_text
+    name: "Status"
+    update_interval: 15s
+    lambda: |-
+      if (isnan(id(moisture).state)) return {"Needs calibration"};
+      if (id(pump).state) return {"Drinking"};
+      if (id(jar_empty)) return {"Water jar probably empty"};
+      if (id(moisture).state < id(threshold).state) return {"Thirsty"};
+      return {"Happy"};
+
+# ---------------------------------------------------------------------
+#  Settings (all editable on the device web page, saved in flash)
+# ---------------------------------------------------------------------
+number:
+  - platform: template
+    id: cal_dry
+    name: "Calibration dry voltage"
+    min_value: 0
+    max_value: 3.3
+    step: 0.001
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: cal_wet
+    name: "Calibration wet voltage"
+    min_value: 0
+    max_value: 3.3
+    step: 0.001
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: threshold
+    name: "Water below moisture"
+    unit_of_measurement: "%"
+    min_value: 5
+    max_value: 90
+    step: 1
+    initial_value: 35
+    optimistic: true
+    restore_value: true
+    mode: slider
+    entity_category: config
+
+  - platform: template
+    id: burst_secs
+    name: "Pump burst length"
+    unit_of_measurement: "s"
+    min_value: 1
+    max_value: 10
+    step: 1
+    initial_value: 3
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: soak_min
+    name: "Soak time between bursts"
+    unit_of_measurement: "min"
+    min_value: 2
+    max_value: 240
+    step: 1
+    initial_value: 15
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    id: max_bursts
+    name: "Max bursts per day"
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 6
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+text:
+  - platform: template
+    id: ntfy_topic
+    name: "ntfy topic"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "${ntfy_default_topic}"
+    max_length: 64
+    entity_category: config
+
+  - platform: template
+    id: plant_name
+    name: "Plant name"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "Your plant"
+    max_length: 32
+    entity_category: config
+
+button:
+  - platform: template
+    name: "Water now"
+    icon: mdi:water
+    on_press:
+      - lambda: |-
+          id(jar_empty) = false;
+          id(fail_bursts) = 0;
+      - script.execute:
+          id: pump_burst
+          secs: !lambda return (int) id(burst_secs).state;
+      - lambda: id(mark_watered).execute();
+
+  - platform: template
+    name: "Calibrate DRY (sensor in air)"
+    entity_category: config
+    on_press:
+      - number.set:
+          id: cal_dry
+          value: !lambda return id(soil_v).state;
+
+  - platform: template
+    name: "Calibrate WET (sensor in water)"
+    entity_category: config
+    on_press:
+      - number.set:
+          id: cal_wet
+          value: !lambda return id(soil_v).state;
+
+  - platform: template
+    name: "Jar refilled"
+    icon: mdi:cup-water
+    on_press:
+      - lambda: |-
+          id(jar_empty) = false;
+          id(fail_bursts) = 0;
+
+  - platform: template
+    name: "Send test notification"
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: notify
+          title: "Hola from Jardinerito"
+          message: "Notifications work!"
+          tags: "seedling,wave"
+
+  - platform: restart
+    name: "Restart"
+    entity_category: config
+
+# ---------------------------------------------------------------------
+#  State
+# ---------------------------------------------------------------------
+globals:
+  - id: last_watered_epoch
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: last_watered_ms
+    type: uint32_t
+    initial_value: "0"
+  - id: bursts_today
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: soak_until
+    type: uint32_t
+    initial_value: "0"
+  - id: awaiting_eval
+    type: bool
+    initial_value: "false"
+  - id: moisture_at_burst
+    type: float
+    initial_value: "0"
+  - id: fail_bursts
+    type: int
+    initial_value: "0"
+  - id: jar_empty
+    type: bool
+    initial_value: "false"
+  - id: limit_alerted
+    type: bool
+    initial_value: "false"
+  - id: do_water
+    type: bool
+    initial_value: "false"
+  - id: drinking_until
+    type: uint32_t
+    initial_value: "0"
+  - id: info_until
+    type: uint32_t
+    initial_value: "0"
+  - id: bday_until
+    type: uint32_t
+    initial_value: "0"
+  - id: wake_until
+    type: uint32_t
+    initial_value: "0"
+  - id: bl_current
+    type: int
+    initial_value: "-1"
+
+# ---------------------------------------------------------------------
+#  Logic
+# ---------------------------------------------------------------------
+script:
+  - id: pump_burst
+    mode: restart
+    parameters:
+      secs: int
+    then:
+      - switch.turn_on: pump
+      - delay: !lambda "return (uint32_t) (secs < 1 ? 1 : (secs > 10 ? 10 : secs)) * 1000;"
+      - switch.turn_off: pump
+
+  - id: stop_pump
+    then:
+      - script.stop: pump_burst
+      - switch.turn_off: pump
+
+  # Hard safety: pump can never run longer than 15 s in one go
+  - id: pump_watchdog
+    mode: restart
+    then:
+      - delay: 15s
+      - logger.log: "Pump watchdog: forcing pump off"
+      - script.stop: pump_burst
+      - switch.turn_off: pump
+
+  - id: mark_watered
+    then:
+      - lambda: |-
+          id(last_watered_ms) = millis();
+          if (id(last_watered_ms) == 0) id(last_watered_ms) = 1;
+          auto t = id(sntp_time).now();
+          if (t.is_valid()) id(last_watered_epoch) = (int) t.timestamp;
+
+  - id: notify
+    mode: queued
+    max_runs: 5
+    parameters:
+      title: string
+      message: string
+      tags: string
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              - lambda: return id(ntfy_topic).state.size() > 0;
+          then:
+            - http_request.post:
+                url: !lambda return std::string("https://ntfy.sh/") + id(ntfy_topic).state;
+                request_headers:
+                  Title: !lambda "static std::string v; v = title; return v.c_str();"
+                  Tags: !lambda "static std::string v; v = tags; return v.c_str();"
+                body: !lambda return message;
+
+  - id: update_backlight
+    then:
+      - lambda: |-
+          int target = 200;                       // day brightness (0-255)
+          uint32_t now = millis();
+          bool awake = (int32_t) (now - id(wake_until)) < 0;
+          auto t = id(sntp_time).now();
+          if (!awake && t.is_valid() && (t.hour >= 22 || t.hour < 7)) target = 12;  // night
+          if (target != id(bl_current)) {
+            id(lp5562).write_byte(0x0E, (uint8_t) target);
+            id(bl_current) = target;
+          }
+
+interval:
+  # Fallback daily reset when there is no internet time (no Wi-Fi)
+  - interval: 24h
+    then:
+      - lambda: |-
+          if (!id(sntp_time).now().is_valid()) {
+            id(bursts_today) = 0;
+            id(limit_alerted) = false;
+          }
+
+  - interval: 10s
+    then:
+      - script.execute: update_backlight
+
+  # Watering decision, every 30 s
+  - interval: 30s
+    then:
+      - lambda: |-
+          id(do_water) = false;
+          if (!id(auto_water).state) return;
+          float m = id(moisture).state;
+          if (isnan(m)) return;                       // not calibrated yet
+          if (id(pump).state) return;
+          uint32_t now = millis();
+          if (id(soak_until) != 0 && (int32_t) (now - id(soak_until)) < 0) return;  // still soaking
+
+          // Did the last burst actually raise moisture? If not 3x in a row -> jar empty
+          if (id(awaiting_eval)) {
+            id(awaiting_eval) = false;
+            if (m - id(moisture_at_burst) < 2.0f) {
+              id(fail_bursts) += 1;
+            } else {
+              id(fail_bursts) = 0;
+              id(jar_empty) = false;
+            }
+            if (id(fail_bursts) >= 3 && !id(jar_empty)) {
+              id(jar_empty) = true;
+              id(notify).execute(id(plant_name).state + std::string(": water jar is probably empty"),
+                                 std::string("I tried 3 times but the soil stayed dry. Please refill the jar, then press my button."),
+                                 std::string("warning,droplet"));
+            }
+          }
+          if (id(jar_empty)) return;
+          if (m >= id(threshold).state) return;
+          if (id(bursts_today) >= (int) id(max_bursts).state) {
+            if (!id(limit_alerted)) {
+              id(limit_alerted) = true;
+              id(notify).execute(id(plant_name).state + std::string(": daily watering limit reached"),
+                                 std::string("Still dry after today's max bursts. I'll continue tomorrow. Check the jar and tube?"),
+                                 std::string("warning"));
+            }
+            return;
+          }
+          // Go water
+          id(do_water) = true;
+          id(bursts_today) += 1;
+          id(moisture_at_burst) = m;
+          id(awaiting_eval) = true;
+          id(soak_until) = now + (uint32_t) (id(soak_min).state * 60000.0f);
+          if (id(soak_until) == 0) id(soak_until) = 1;
+          char buf[96];
+          snprintf(buf, sizeof(buf), "Soil was at %.0f%%, gave it a %d s drink.", m, (int) id(burst_secs).state);
+          id(notify).execute(id(plant_name).state + std::string(" was watered"), std::string(buf), std::string("seedling,droplet"));
+      - if:
+          condition:
+            lambda: return id(do_water);
+          then:
+            - script.execute:
+                id: pump_burst
+                secs: !lambda return (int) id(burst_secs).state;
+            - script.execute: mark_watered
+
+# ---------------------------------------------------------------------
+#  Display
+# ---------------------------------------------------------------------
+font:
+  - file: "gfonts://Roboto@500"
+    id: font_s
+    size: 13
+  - file: "gfonts://Roboto@700"
+    id: font_m
+    size: 17
+  - file: "gfonts://Roboto@700"
+    id: font_l
+    size: 26
+
+color:
+  - id: c_green
+    hex: "4CC764"
+  - id: c_leaf
+    hex: "2E9E48"
+  - id: c_dry
+    hex: "C8B44A"
+  - id: c_dryleaf
+    hex: "9C8A34"
+  - id: c_blue
+    hex: "3AA0FF"
+  - id: c_pink
+    hex: "FF8FA3"
+  - id: c_grey
+    hex: "6E6E6E"
+  - id: c_white
+    hex: "F2F2F2"
+  - id: c_black
+    hex: "000000"
+  - id: c_red
+    hex: "FF5A5A"
+
+display:
+  - platform: mipi_spi
+    id: screen
+    model: M5STACK-ATOMS3R-GC9107
+    rotation: ${display_rotation}
+    update_interval: 500ms
+    lambda: |-
+      const uint32_t now = millis();
+      it.fill(id(c_black));
+
+      // ---------------- Info page (long press) ----------------
+      if ((int32_t) (now - id(info_until)) < 0) {
+        it.print(64, 4, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Jardinerito");
+        if (wifi::global_wifi_component->is_connected()) {
+          it.print(4, 30, id(font_s), id(c_green), "Wi-Fi connected");
+          it.printf(4, 48, id(font_s), id(c_white), "%.20s", id(wifi_ssid).state.c_str());
+          it.printf(4, 66, id(font_s), id(c_white), "%s", id(ip_addr).state.c_str());
+          it.print(4, 90, id(font_s), id(c_grey), "Open the IP in a");
+          it.print(4, 106, id(font_s), id(c_grey), "browser for settings");
+        } else {
+          it.print(4, 28, id(font_s), id(c_red), "No Wi-Fi yet");
+          it.print(4, 46, id(font_s), id(c_white), "Join hotspot:");
+          it.print(4, 62, id(font_s), id(c_green), "Jardinerito-Setup");
+          it.print(4, 80, id(font_s), id(c_white), "password:");
+          it.print(4, 96, id(font_s), id(c_green), "plantlove");
+        }
+        return;
+      }
+
+      // ---------------- Birthday screen ----------------
+      // Auto: first 3 h after power-on, between 24 Oct and 7 Nov 2026,
+      // 6 s out of every 20 s (so the plant face still shows). Double press = 12 s.
+      bool bday = (int32_t) (now - id(bday_until)) < 0;
+      if (!bday && now < 3UL * 3600UL * 1000UL && !id(pump).state) {
+        auto t = id(sntp_time).now();
+        bool date_ok = !t.is_valid() ||
+            (t.year == 2026 && ((t.month == 10 && t.day_of_month >= 24) || (t.month == 11 && t.day_of_month <= 7)));
+        bday = date_ok && ((now / 1000) % 20) < 6;
+      }
+      if (bday) {
+        // confetti
+        Color conf[4] = {id(c_pink), id(c_blue), id(c_dry), id(c_green)};
+        for (int i = 0; i < 22; i++) {
+          int x = (i * 37 + 11) % 124;
+          int y = (int) (((now / 40) + i * 23) % 140) - 8;
+          it.filled_rectangle(x, y, 3, 3, conf[i % 4]);
+        }
+        it.print(64, 6, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Happy");
+        it.print(64, 26, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Birthday");
+        it.print(64, 48, id(font_l), id(c_pink), TextAlign::TOP_CENTER, "${birthday_name}!");
+        // cake
+        it.filled_rectangle(40, 104, 48, 20, id(c_pink));
+        it.filled_rectangle(40, 98, 48, 7, id(c_white));
+        for (int k = 0; k < 3; k++) {
+          int candle_x = 50 + k * 13;
+          it.filled_rectangle(candle_x, 88, 4, 10, id(c_blue));
+          int fr = ((now / 250) + k) % 2 ? 3 : 2;
+          it.filled_circle(candle_x + 2, 84, fr, id(c_dry));
+        }
+        return;
+      }
+
+      const float m = id(moisture).state;
+      const bool calibrated = !isnan(m);
+      const bool drinking = id(pump).state || (int32_t) (now - id(drinking_until)) < 0;
+      const bool thirsty = calibrated && m < id(threshold).state;
+      const bool sad = id(jar_empty) && !drinking;
+      const int cx = 64, cy = 46, r = 28;
+      const float PI_F = 3.14159265f;
+
+      // ---------------- Leaves ----------------
+      Color head = (thirsty || sad) && !drinking ? id(c_dry) : id(c_green);
+      Color leaf = (thirsty || sad) && !drinking ? id(c_dryleaf) : id(c_leaf);
+      it.line(cx, cy - r, cx, cy - r - 8, leaf);
+      if ((thirsty || sad) && !drinking) {
+        // drooping leaves
+        it.filled_triangle(cx, cy - r - 6, cx - 20, cy - r + 2, cx - 10, cy - r - 10, leaf);
+        it.filled_triangle(cx, cy - r - 6, cx + 20, cy - r + 2, cx + 10, cy - r - 10, leaf);
+      } else {
+        it.filled_triangle(cx, cy - r - 6, cx - 18, cy - r - 16, cx - 4, cy - r - 18, leaf);
+        it.filled_triangle(cx, cy - r - 6, cx + 18, cy - r - 16, cx + 4, cy - r - 18, leaf);
+      }
+
+      // ---------------- Head ----------------
+      it.filled_circle(cx, cy, r, head);
+
+      // ---------------- Eyes ----------------
+      const int ex = 11, ey = cy - 6;
+      if (drinking) {
+        // happy closed eyes  ^ ^
+        it.line(cx - ex - 4, ey + 2, cx - ex, ey - 2, id(c_black));
+        it.line(cx - ex, ey - 2, cx - ex + 4, ey + 2, id(c_black));
+        it.line(cx + ex - 4, ey + 2, cx + ex, ey - 2, id(c_black));
+        it.line(cx + ex, ey - 2, cx + ex + 4, ey + 2, id(c_black));
+      } else if (!calibrated) {
+        it.filled_circle(cx - ex, ey, 3, id(c_black));
+        it.filled_circle(cx + ex, ey, 3, id(c_black));
+      } else if (thirsty || sad) {
+        // tired half-closed eyes
+        it.filled_rectangle(cx - ex - 4, ey, 9, 3, id(c_black));
+        it.filled_rectangle(cx + ex - 4, ey, 9, 3, id(c_black));
+      } else {
+        // blink every ~5 s
+        bool blink = (now / 500) % 10 == 0;
+        if (blink) {
+          it.filled_rectangle(cx - ex - 4, ey, 9, 2, id(c_black));
+          it.filled_rectangle(cx + ex - 4, ey, 9, 2, id(c_black));
+        } else {
+          it.filled_circle(cx - ex, ey, 4, id(c_black));
+          it.filled_circle(cx + ex, ey, 4, id(c_black));
+          it.filled_circle(cx - ex + 1, ey - 1, 1, id(c_white));
+          it.filled_circle(cx + ex + 1, ey - 1, 1, id(c_white));
+        }
+        it.filled_circle(cx - 18, cy + 6, 4, id(c_pink));
+        it.filled_circle(cx + 18, cy + 6, 4, id(c_pink));
+      }
+
+      // ---------------- Mouth ----------------
+      if (drinking) {
+        it.filled_circle(cx, cy + 12, 5, id(c_black));
+        // falling drops
+        int phase = (now / 150) % 12;
+        for (int k = 0; k < 3; k++) {
+          int dy = ((phase + k * 4) % 12) * 2;
+          it.filled_circle(cx - 30 + k * 30, 2 + dy, 2, id(c_blue));
+        }
+      } else if (!calibrated) {
+        it.line(cx - 8, cy + 12, cx + 8, cy + 12, id(c_black));
+        it.print(cx + r + 2, cy - r, id(font_m), id(c_white), "?");
+      } else if (thirsty || sad) {
+        for (int a = 20; a <= 160; a += 8) {
+          float rad = a * PI_F / 180.0f;
+          int x = cx + (int) (12 * cosf(rad));
+          int y = cy + 18 - (int) (7 * sinf(rad));
+          it.filled_circle(x, y, 1, id(c_black));
+        }
+        if (thirsty && !sad) {
+          // sweat drop
+          it.filled_circle(cx + r - 2, cy - 12, 3, id(c_blue));
+          it.filled_triangle(cx + r - 5, cy - 13, cx + r + 1, cy - 13, cx + r - 2, cy - 19, id(c_blue));
+        }
+      } else {
+        for (int a = 20; a <= 160; a += 8) {
+          float rad = a * PI_F / 180.0f;
+          int x = cx + (int) (13 * cosf(rad));
+          int y = cy + 6 + (int) (9 * sinf(rad));
+          it.filled_circle(x, y, 1, id(c_black));
+        }
+      }
+
+      // ---------------- Bottom panel ----------------
+      if (!calibrated) {
+        it.print(64, 84, id(font_m), id(c_white), TextAlign::TOP_CENTER, "Calibrate me");
+        it.print(64, 106, id(font_s), id(c_grey), TextAlign::TOP_CENTER, "hold button = info");
+        return;
+      }
+
+      // moisture bar
+      const int bx = 6, by = 82, bw = 116, bh = 10;
+      it.rectangle(bx, by, bw, bh, id(c_grey));
+      int fill = (int) ((bw - 2) * m / 100.0f);
+      it.filled_rectangle(bx + 1, by + 1, fill, bh - 2, thirsty ? id(c_dry) : id(c_blue));
+      int tx = bx + 1 + (int) ((bw - 2) * id(threshold).state / 100.0f);
+      it.line(tx, by - 2, tx, by + bh + 1, id(c_white));
+
+      if (sad) {
+        it.printf(4, 96, id(font_s), id(c_red), "Soil %.0f%%  Refill", m);
+        it.print(4, 112, id(font_s), id(c_red), "jar, then press me");
+        return;
+      }
+      if (drinking) {
+        it.printf(4, 96, id(font_s), id(c_blue), "Soil %.0f%%  Drinking", m);
+      } else {
+        it.printf(4, 96, id(font_s), thirsty ? id(c_dry) : id(c_white), "Soil %.0f%%  %s", m, thirsty ? "Thirsty" : "Happy");
+      }
+
+      // last watered
+      long ago = -1;
+      if (id(last_watered_ms) != 0) {
+        ago = (long) ((now - id(last_watered_ms)) / 1000);
+      } else if (id(last_watered_epoch) != 0) {
+        auto t = id(sntp_time).now();
+        if (t.is_valid()) ago = (long) t.timestamp - id(last_watered_epoch);
+      }
+      if (ago < 0) {
+        it.print(4, 112, id(font_s), id(c_grey), id(last_watered_epoch) != 0 ? "Watered: --" : "Not watered yet");
+      } else if (ago < 120) {
+        it.print(4, 112, id(font_s), id(c_grey), "Watered just now");
+      } else if (ago < 3600) {
+        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld min ago", ago / 60);
+      } else if (ago < 172800) {
+        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld h ago", ago / 3600);
+      } else {
+        it.printf(4, 112, id(font_s), id(c_grey), "Watered %ld days ago", ago / 86400);
+      }
