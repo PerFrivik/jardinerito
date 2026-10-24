@@ -388,6 +388,8 @@ next_steps() {
 5. From now on it runs by itself. Watch the face:
    happy = fine, yellow + sweat drop = thirsty (it waters itself),
    "¡Agua, por favor!" = the jar is empty: refill it and press the button.
+6. Big plant? Put the outlet tube in a measuring cup and press the button once to see how much one
+   burst gives. Then set "Pump burst length" and "Max bursts per day" on the settings page.
 
 Settings page (watering amounts, names, notifications): http://${DEVICE_IP:-<hold the button 2 s to see the address>}
 EOF

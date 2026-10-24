@@ -44,6 +44,10 @@ When the soil is below 35 %, it pumps 3 s, then waits 15 min for the water to sp
 If watering 3 times in a row doesn't help, the jar is probably empty: refill it and press the button.
 At night (22:00 to 07:00) it takes a siesta and the screen dims. All of these can be changed on the settings page.
 
+**Big plant?** Measure one burst: put the outlet tube in a measuring cup and press the button once. Then set
+"Pump burst length" and "Max bursts per day" on the settings page, so a day's bursts cover what the plant drinks
+on a hot day. If it ever runs out, it sends a "daily watering limit reached" message.
+
 ## Modifying the software
 
 The firmware is [ESPHome](https://esphome.io). Everything (screen drawing, watering logic, settings) is in [`jardinerito.yaml`](jardinerito.yaml).
